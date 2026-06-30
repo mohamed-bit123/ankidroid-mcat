@@ -70,6 +70,11 @@
         android:id="@+id/action_import"
         android:menuCategory="secondary"
         android:title="@string/menu_import"/>
+    <!-- Speedrun (MCAT fork) -->
+    <item
+        android:id="@+id/action_speedrun"
+        android:menuCategory="secondary"
+        android:title="MCAT Speedrun"/>
     <item
         android:id="@+id/action_export_collection"
         android:menuCategory="secondary" />

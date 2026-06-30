@@ -402,6 +402,14 @@
             android:exported="false"
             />
 
+        <!-- Speedrun (MCAT fork): practice-question runner + three-score panel. -->
+        <activity
+            android:name="com.ichi2.anki.SpeedrunActivity"
+            android:label="MCAT Speedrun"
+            android:exported="false"
+            android:configChanges="keyboardHidden|orientation|screenSize"
+            />
+
         <activity-alias
             android:name="com.ichi2.anki.AnkiCardContextMenuAction"
             android:label="@string/context_menu_anki_card_label"

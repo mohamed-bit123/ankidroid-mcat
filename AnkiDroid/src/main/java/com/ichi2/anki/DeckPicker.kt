@@ -1302,6 +1302,11 @@ open class DeckPicker :
                 showImportDialog()
                 return true
             }
+            R.id.action_speedrun -> {
+                Timber.i("DeckPicker:: MCAT Speedrun pressed")
+                startActivity(Intent(this, SpeedrunActivity::class.java))
+                return true
+            }
             R.id.action_check_database -> {
                 Timber.i("DeckPicker:: Check database button pressed")
                 showDatabaseErrorDialog(DatabaseErrorDialogType.DIALOG_CONFIRM_DATABASE_CHECK)
@@ -1693,6 +1698,13 @@ open class DeckPicker :
             if (!automaticSync()) {
                 BackupPromptDialog.showIfAvailable(this@DeckPicker)
             }
+        }
+        // Speedrun (MCAT fork): surface the shared Rust engine's liveness probe on the
+        // phone, mirroring the desktop check. Confirms our engine change reaches mobile.
+        launchCatchingTask {
+            val ping = withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunPing() }
+            Timber.i("SPEEDRUN %s", ping)
+            showSnackbar(ping, Snackbar.LENGTH_LONG)
         }
     }
 
