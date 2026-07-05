@@ -15,12 +15,15 @@ package com.ichi2.anki
 
 import android.graphics.Color
 import android.os.Bundle
+import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import com.ichi2.anki.CollectionManager.withCol
 import com.ichi2.anki.common.utils.android.showThemedToast
 import com.ichi2.anki.libanki.Note
@@ -123,6 +126,13 @@ class SpeedrunActivity : AnkiActivity() {
                 setOnClickListener { onSetupMcat() }
             }
         root.addView(setupButton)
+
+        val calibrateButton =
+            Button(this).apply {
+                text = "Record full-length score"
+                setOnClickListener { onRecordCalibration() }
+            }
+        root.addView(calibrateButton)
 
         dailyView =
             TextView(this).apply {
@@ -380,6 +390,68 @@ class SpeedrunActivity : AnkiActivity() {
             }
             updateControls()
             refreshScores()
+        }
+
+    // Readiness calibration ("prove yourself wrong"): after a real full-length
+    // practice test, log what the app projected vs. the actual scaled score.
+    // Writes to the shared engine (speedrunRecordCalibration → config), so it
+    // syncs to desktop like every other score input and tightens the Readiness
+    // range / unlocks higher confidence. Mirrors the desktop dialog.
+    private fun onRecordCalibration() =
+        launchCatchingTask {
+            val rdy = withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunScores() }.readiness
+            val default = if (rdy.known) rdy.projected.toInt().toString() else "500"
+            val pad = (resources.displayMetrics.density * 16).toInt()
+
+            val projectedInput =
+                EditText(this@SpeedrunActivity).apply {
+                    inputType = InputType.TYPE_CLASS_NUMBER
+                    hint = "Projected (app's guess), 472–528"
+                    setText(default)
+                }
+            val actualInput =
+                EditText(this@SpeedrunActivity).apply {
+                    inputType = InputType.TYPE_CLASS_NUMBER
+                    hint = "Actual score, 472–528"
+                    setText(default)
+                }
+            val container =
+                LinearLayout(this@SpeedrunActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(pad, pad / 2, pad, 0)
+                    addView(
+                        TextView(this@SpeedrunActivity).apply {
+                            text =
+                                "After a real full-length practice test, log what the app projected " +
+                                "at the time and your actual scaled score (both 472–528). This " +
+                                "calibrates Readiness to your true prediction error."
+                            textSize = 13f
+                        },
+                    )
+                    addView(projectedInput)
+                    addView(actualInput)
+                }
+
+            AlertDialog
+                .Builder(this@SpeedrunActivity)
+                .setTitle("Record full-length practice score")
+                .setView(container)
+                .setPositiveButton("Save") { _, _ ->
+                    val projected = projectedInput.text.toString().toFloatOrNull()
+                    val actual = actualInput.text.toString().toFloatOrNull()
+                    if (projected == null || actual == null) {
+                        showThemedToast(this@SpeedrunActivity, "Enter two numbers on the 472–528 scale.", false)
+                        return@setPositiveButton
+                    }
+                    launchCatchingTask {
+                        withContext(Dispatchers.IO) {
+                            CollectionManager.getBackend().speedrunRecordCalibration(projected, actual)
+                        }
+                        refreshScores()
+                        showThemedToast(this@SpeedrunActivity, "Recorded — Readiness recalibrated to your real score.", false)
+                    }
+                }.setNegativeButton("Cancel", null)
+                .show()
         }
 
     private fun updateControls() =
