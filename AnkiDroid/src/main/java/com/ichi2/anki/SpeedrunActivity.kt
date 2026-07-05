@@ -17,6 +17,7 @@
 
 package com.ichi2.anki
 
+import android.app.DatePickerDialog
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -41,6 +42,7 @@ import com.ichi2.anki.common.utils.android.showThemedToast
 import com.ichi2.anki.libanki.Note
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.Calendar
 
 class SpeedrunActivity : AnkiActivity() {
     private data class Question(
@@ -80,7 +82,11 @@ class SpeedrunActivity : AnkiActivity() {
     private lateinit var feedbackView: TextView
     private lateinit var nextButton: MaterialButton
     private lateinit var startButton: MaterialButton
+    private lateinit var examLabel: TextView
+    private lateinit var clearExamButton: MaterialButton
 
+    private var examHasDate = false
+    private var examDaysAway = 0
     private var currentQuestion: Question? = null
     private var sessionCount = 0
     private var sessionCorrect = 0
@@ -184,6 +190,39 @@ class SpeedrunActivity : AnkiActivity() {
         root.addView(memoryCard.view)
         root.addView(performanceCard.view)
         root.addView(readinessCard.view)
+
+        // Exam date row — drives the forward projection of Readiness.
+        val examCard = card()
+        val examRow =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+        examCard.addView(examRow)
+        examRow.addView(
+            TextView(this).apply {
+                text = "EXAM DATE"
+                textSize = 11f
+                setTextColor(muted)
+                setTypeface(typeface, Typeface.BOLD)
+                letterSpacing = 0.08f
+            },
+        )
+        examLabel =
+            TextView(this).apply {
+                textSize = 12f
+                setTextColor(muted)
+                setPadding(dpi(8f), 0, dpi(8f), 0)
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            }
+        examRow.addView(examLabel)
+        examRow.addView(
+            outlinedButton("Set…").apply { setOnClickListener { onSetExamDate() } },
+        )
+        clearExamButton =
+            outlinedButton("Clear").apply { setOnClickListener { onClearExamDate() } }
+        examRow.addView(clearExamButton)
+        root.addView(examCard)
 
         // Practice card.
         val practice = card()
@@ -364,10 +403,11 @@ class SpeedrunActivity : AnkiActivity() {
             value: Float,
             caption: String,
             reason: String,
+            projected: Float? = null,
         ) {
             if (known) {
                 valueView.text = "${value.toInt()}"
-                bar?.setValue(value)
+                bar?.setValue(value, projected)
                 captionView.text = caption
                 setPill(null, muted)
             } else {
@@ -386,11 +426,14 @@ class SpeedrunActivity : AnkiActivity() {
             confidence: String,
             note: String,
             reason: String,
+            hasExam: Boolean = false,
+            daysToExam: Int = 0,
         ) {
             if (known) {
                 valueView.text = "${proj.toInt()}"
                 range?.setRange(proj, low, high)
-                captionView.text = "Likely ${low.toInt()}–${high.toInt()} · $note"
+                val exam = if (hasExam) "projected for exam in ${daysToExam}d · " else ""
+                captionView.text = "${exam}likely ${low.toInt()}–${high.toInt()} · $note"
                 val conf = confidence.ifBlank { "low" }.lowercase()
                 setPill(
                     "${conf.replaceFirstChar { it.uppercase() }} confidence",
@@ -411,10 +454,15 @@ class SpeedrunActivity : AnkiActivity() {
         private val track: Int,
     ) : View(this@SpeedrunActivity) {
         private var value: Float? = null
+        private var projected: Float? = null
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        fun setValue(v: Float?) {
+        fun setValue(
+            v: Float?,
+            proj: Float? = null,
+        ) {
             value = v
+            projected = proj
             invalidate()
         }
 
@@ -424,11 +472,20 @@ class SpeedrunActivity : AnkiActivity() {
             val r = h / 2
             paint.color = track
             canvas.drawRoundRect(0f, 0f, w, h, r, r, paint)
-            value?.let {
-                val frac = (it / 100f).coerceIn(0f, 1f)
+            value?.let { v ->
+                val frac = (v / 100f).coerceIn(0f, 1f)
                 val fw = maxOf(h, w * frac)
                 paint.color = accent
                 canvas.drawRoundRect(0f, 0f, fw, h, r, r, paint)
+                // Marker where recall is projected to fall by the exam day
+                // (storage strength): the gap to the fill is the durability risk.
+                projected?.let { pr ->
+                    if (pr < v) {
+                        val x = maxOf(1.5f, w * (pr / 100f))
+                        paint.color = Color.WHITE
+                        canvas.drawRect(x - 1f, 0f, x + 1f, h, paint)
+                    }
+                }
             }
         }
     }
@@ -504,12 +561,15 @@ class SpeedrunActivity : AnkiActivity() {
         launchCatchingTask {
             val s = withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunScores() }
             val mem = s.memory
-            memoryCard.setPct(
-                mem.known,
-                mem.value,
-                "retained over ${mem.studiedCards} studied card(s) · ${(mem.topicCoverage * 100).toInt()}% of topics",
-                mem.reason,
-            )
+            var memCaption =
+                "recall now · durability ~${mem.meanStabilityDays.toInt()}d stability · " +
+                    "${(mem.topicCoverage * 100).toInt()}% topics"
+            var projected: Float? = null
+            if (mem.hasProjection) {
+                projected = mem.projectedRecall
+                memCaption += "\n~${mem.projectedRecall.toInt()}% recall on exam day if you stop now"
+            }
+            memoryCard.setPct(mem.known, mem.value, memCaption, mem.reason, projected)
             val perf = s.performance
             performanceCard.setPct(
                 perf.known,
@@ -518,7 +578,20 @@ class SpeedrunActivity : AnkiActivity() {
                 perf.reason,
             )
             val rdy = s.readiness
-            readinessCard.setRange(rdy.known, rdy.projected, rdy.low, rdy.high, rdy.confidence, rdy.calibrationNote, rdy.reason)
+            readinessCard.setRange(
+                rdy.known,
+                rdy.projected,
+                rdy.low,
+                rdy.high,
+                rdy.confidence,
+                rdy.calibrationNote,
+                rdy.reason,
+                rdy.hasExam,
+                rdy.daysToExam,
+            )
+            examHasDate = rdy.hasExam
+            examDaysAway = rdy.daysToExam
+            updateExamLabel()
         }
 
     // Practice flow (open-ended, one question at a time) ----------------------
@@ -752,6 +825,49 @@ class SpeedrunActivity : AnkiActivity() {
                     }
                 }.setNegativeButton("Cancel", null)
                 .show()
+        }
+
+    // Exam date: set/clear the target MCAT date. Readiness then projects each
+    // topic's recall forward to that day using FSRS stability (storage
+    // strength). Writes to the shared engine (config), so it syncs to desktop.
+    private fun updateExamLabel() {
+        if (examHasDate) {
+            examLabel.text = "$examDaysAway days away — Readiness projects to this day"
+            clearExamButton.isEnabled = true
+        } else {
+            examLabel.text = "Not set — Readiness reflects today only"
+            clearExamButton.isEnabled = false
+        }
+    }
+
+    private fun onSetExamDate() {
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DAY_OF_YEAR, if (examHasDate && examDaysAway > 0) examDaysAway else 30)
+        DatePickerDialog(
+            this,
+            { _, year, month, day ->
+                val picked = Calendar.getInstance()
+                picked.set(year, month, day, 9, 0, 0)
+                val ts = picked.timeInMillis / 1000
+                launchCatchingTask {
+                    withContext(Dispatchers.IO) {
+                        CollectionManager.getBackend().speedrunSetExamDate(ts)
+                    }
+                    refreshScores()
+                    showThemedToast(this@SpeedrunActivity, "Exam date set — Readiness now projects to that day.", false)
+                }
+            },
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH),
+            cal.get(Calendar.DAY_OF_MONTH),
+        ).apply { datePicker.minDate = System.currentTimeMillis() }.show()
+    }
+
+    private fun onClearExamDate() =
+        launchCatchingTask {
+            withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunSetExamDate(0) }
+            refreshScores()
+            showThemedToast(this@SpeedrunActivity, "Exam date cleared.", false)
         }
 
     private fun updateControls() =
