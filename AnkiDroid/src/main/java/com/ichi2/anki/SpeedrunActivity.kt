@@ -10,20 +10,32 @@
 // concepts and you can go as long as you like against a recommended daily band.
 // Application questions are notes of the "MCAT Practice Question" notetype tagged
 // `mcat-question`, kept separate from flashcards.
+//
+// The UI is built programmatically with Material 3 components (cards, buttons)
+// plus two small custom Views (a progress bar and the Readiness range bar) so it
+// stays theme-aware (day/night) and visually consistent with the desktop panel.
 
 package com.ichi2.anki
 
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
+import androidx.core.graphics.ColorUtils
+import com.google.android.material.button.MaterialButton
+import com.google.android.material.card.MaterialCardView
+import com.google.android.material.color.MaterialColors
 import com.ichi2.anki.CollectionManager.withCol
 import com.ichi2.anki.common.utils.android.showThemedToast
 import com.ichi2.anki.libanki.Note
@@ -40,18 +52,34 @@ class SpeedrunActivity : AnkiActivity() {
         val explanation: String,
     )
 
-    private lateinit var memoryView: TextView
-    private lateinit var performanceView: TextView
-    private lateinit var readinessView: TextView
+    // Each score reads as its own thing, so each gets its own accent.
+    private val accentMemory = Color.parseColor("#3b82f6")
+    private val accentPerformance = Color.parseColor("#14b8a6")
+    private val accentReadiness = Color.parseColor("#8b5cf6")
+    private val confColors =
+        mapOf(
+            "low" to Color.parseColor("#f59e0b"),
+            "medium" to Color.parseColor("#3b82f6"),
+            "high" to Color.parseColor("#10b981"),
+        )
+
+    // Theme-aware neutrals, resolved in onCreate.
+    private var onSurface = Color.BLACK
+    private var muted = Color.GRAY
+    private var outline = Color.LTGRAY
+
+    private lateinit var memoryCard: ScoreCard
+    private lateinit var performanceCard: ScoreCard
+    private lateinit var readinessCard: ScoreCard
     private lateinit var dailyView: TextView
     private lateinit var progressView: TextView
     private lateinit var topicView: TextView
     private lateinit var stemView: TextView
-    private lateinit var optionButtons: Map<String, Button>
-    private lateinit var dontKnowButton: Button
+    private lateinit var optionButtons: Map<String, MaterialButton>
+    private lateinit var dontKnowButton: MaterialButton
     private lateinit var feedbackView: TextView
-    private lateinit var nextButton: Button
-    private lateinit var startButton: Button
+    private lateinit var nextButton: MaterialButton
+    private lateinit var startButton: MaterialButton
 
     private var currentQuestion: Question? = null
     private var sessionCount = 0
@@ -64,140 +92,410 @@ class SpeedrunActivity : AnkiActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "MCAT Speedrun"
+        onSurface = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurface, Color.BLACK)
+        muted = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY)
+        outline = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutlineVariant, Color.LTGRAY)
         setContentView(buildUi())
         refreshScores()
         updateControls()
     }
 
+    // Layout helpers ----------------------------------------------------------
+
+    private fun dp(v: Float): Float = resources.displayMetrics.density * v
+
+    private fun dpi(v: Float): Int = dp(v).toInt()
+
+    private fun matchWrap(bottomMargin: Float = 0f): LinearLayout.LayoutParams =
+        LinearLayout
+            .LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { this.bottomMargin = dpi(bottomMargin) }
+
+    private fun pill(
+        text: String,
+        color: Int,
+    ): TextView =
+        TextView(this).apply {
+            this.text = text
+            setTextColor(color)
+            textSize = 10f
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(dpi(9f), dpi(3f), dpi(9f), dpi(3f))
+            background =
+                GradientDrawable().apply {
+                    cornerRadius = dp(9f)
+                    setColor(ColorUtils.setAlphaComponent(color, 40))
+                }
+        }
+
+    private fun card(): MaterialCardView =
+        MaterialCardView(this).apply {
+            radius = dp(16f)
+            cardElevation = 0f
+            strokeWidth = dpi(1f)
+            strokeColor = outline
+            setContentPadding(dpi(16f), dpi(14f), dpi(16f), dpi(14f))
+            layoutParams = matchWrap(bottomMargin = 12f)
+        }
+
+    private fun filledButton(text: String): MaterialButton =
+        MaterialButton(this).apply {
+            this.text = text
+            isAllCaps = false
+        }
+
+    private fun outlinedButton(text: String): MaterialButton =
+        MaterialButton(this, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            this.text = text
+            isAllCaps = false
+        }
+
     private fun buildUi(): ScrollView {
-        val pad = (resources.displayMetrics.density * 16).toInt()
+        val pad = dpi(16f)
         val root =
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(pad, pad, pad, pad)
             }
 
-        fun header(text: String) =
+        root.addView(
             TextView(this).apply {
-                this.text = text
-                textSize = 18f
-                setPadding(0, pad / 2, 0, pad / 4)
-            }
-
-        fun card(label: String): TextView {
-            root.addView(header(label))
-            val tv =
-                TextView(this).apply {
-                    textSize = 14f
-                    setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
-                }
-            root.addView(tv)
-            return tv
-        }
-
+                text = "MCAT Speedrun"
+                textSize = 22f
+                setTextColor(onSurface)
+                setTypeface(typeface, Typeface.BOLD)
+            },
+        )
         root.addView(
             TextView(this).apply {
                 text = "Three scores, measured separately and honestly."
                 textSize = 13f
+                setTextColor(muted)
+                setPadding(0, dpi(2f), 0, dpi(14f))
             },
         )
 
-        memoryView = card("Memory")
-        performanceView = card("Performance")
-        readinessView = card("Readiness")
+        // Three score cards, stacked full-width for phone readability.
+        memoryCard = ScoreCard("Memory", accentMemory, "pct")
+        performanceCard = ScoreCard("Performance", accentPerformance, "pct")
+        readinessCard = ScoreCard("Readiness", accentReadiness, "range")
+        root.addView(memoryCard.view)
+        root.addView(performanceCard.view)
+        root.addView(readinessCard.view)
 
-        val divider =
-            TextView(this).apply {
-                text = "—".repeat(20)
-                setPadding(0, pad, 0, pad / 2)
-            }
-        root.addView(divider)
-
-        startButton =
-            Button(this).apply {
-                text = "Start practice"
-                setOnClickListener { startPractice() }
-            }
-        root.addView(startButton)
-
-        val setupButton =
-            Button(this).apply {
-                text = "Set up MCAT content"
-                setOnClickListener { onSetupMcat() }
-            }
-        root.addView(setupButton)
-
-        val calibrateButton =
-            Button(this).apply {
-                text = "Record full-length score"
-                setOnClickListener { onRecordCalibration() }
-            }
-        root.addView(calibrateButton)
+        // Practice card.
+        val practice = card()
+        val pv =
+            LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        practice.addView(pv)
 
         dailyView =
             TextView(this).apply {
                 textSize = 12f
-                setPadding(0, pad / 2, 0, 0)
+                setPadding(0, 0, 0, dpi(6f))
             }
-        root.addView(dailyView)
+        pv.addView(dailyView)
 
-        progressView = TextView(this).apply { setPadding(0, pad / 2, 0, 0) }
-        root.addView(progressView)
+        progressView =
+            TextView(this).apply {
+                textSize = 12f
+                setTextColor(muted)
+            }
+        pv.addView(progressView)
 
         topicView =
             TextView(this).apply {
-                textSize = 13f
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                textSize = 12f
+                setTextColor(accentPerformance)
+                setTypeface(typeface, Typeface.BOLD)
+                setPadding(0, dpi(2f), 0, 0)
             }
-        root.addView(topicView)
+        pv.addView(topicView)
 
         stemView =
             TextView(this).apply {
                 text = "Start practice to begin."
                 textSize = 16f
-                setPadding(0, pad / 2, 0, pad / 2)
+                setTextColor(onSurface)
+                setPadding(0, dpi(8f), 0, dpi(8f))
             }
-        root.addView(stemView)
+        pv.addView(stemView)
 
         optionButtons =
             listOf("A", "B", "C", "D").associateWith { letter ->
-                Button(this)
+                outlinedButton("")
                     .apply {
-                        isAllCaps = false
                         gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                        layoutParams =
-                            LinearLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.WRAP_CONTENT,
-                            )
+                        insetTop = 0
+                        insetBottom = 0
+                        minHeight = dpi(48f)
+                        layoutParams = matchWrap(bottomMargin = 8f)
                         setOnClickListener { onAnswer(letter) }
-                    }.also { root.addView(it) }
+                    }.also { pv.addView(it) }
             }
 
         dontKnowButton =
-            Button(this).apply {
-                text = "I don't know / I'm guessing"
-                isAllCaps = false
+            outlinedButton("I don't know / I'm guessing").apply {
+                setTextColor(muted)
+                layoutParams = matchWrap(bottomMargin = 4f)
                 setOnClickListener { onDontKnow() }
             }
-        root.addView(dontKnowButton)
+        pv.addView(dontKnowButton)
 
         feedbackView =
             TextView(this).apply {
                 textSize = 14f
-                setPadding(0, pad / 2, 0, pad / 2)
+                setTextColor(onSurface)
+                setPadding(0, dpi(6f), 0, dpi(8f))
             }
-        root.addView(feedbackView)
+        pv.addView(feedbackView)
 
         nextButton =
-            Button(this).apply {
-                text = "Next question"
+            filledButton("Next question").apply {
                 isEnabled = false
+                layoutParams = matchWrap()
                 setOnClickListener { onNext() }
             }
-        root.addView(nextButton)
+        pv.addView(nextButton)
+
+        root.addView(practice)
+
+        // Action buttons.
+        startButton =
+            filledButton("Start practice").apply {
+                layoutParams = matchWrap(bottomMargin = 8f)
+                setOnClickListener { startPractice() }
+            }
+        root.addView(startButton)
+        root.addView(
+            outlinedButton("Set up MCAT content").apply {
+                layoutParams = matchWrap(bottomMargin = 8f)
+                setOnClickListener { onSetupMcat() }
+            },
+        )
+        root.addView(
+            outlinedButton("Record full-length score").apply {
+                layoutParams = matchWrap()
+                setOnClickListener { onRecordCalibration() }
+            },
+        )
 
         return ScrollView(this).apply { addView(root) }
+    }
+
+    // A single score card: accent title, big value, a bar/range, caption, pill.
+    private inner class ScoreCard(
+        title: String,
+        private val accent: Int,
+        kind: String,
+    ) {
+        val view: MaterialCardView = card()
+        private val valueView: TextView
+        private val captionView: TextView
+        private val pillHolder: LinearLayout
+        private val bar: BarView?
+        private val range: RangeBarView?
+
+        init {
+            val col = LinearLayout(this@SpeedrunActivity).apply { orientation = LinearLayout.VERTICAL }
+            view.addView(col)
+
+            val header =
+                LinearLayout(this@SpeedrunActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+            header.addView(
+                TextView(this@SpeedrunActivity).apply {
+                    text = title.uppercase()
+                    textSize = 11f
+                    setTextColor(accent)
+                    setTypeface(typeface, Typeface.BOLD)
+                    letterSpacing = 0.1f
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                },
+            )
+            pillHolder =
+                LinearLayout(this@SpeedrunActivity).apply { orientation = LinearLayout.HORIZONTAL }
+            header.addView(pillHolder)
+            col.addView(header)
+
+            valueView =
+                TextView(this@SpeedrunActivity).apply {
+                    text = "—"
+                    textSize = 30f
+                    setTextColor(onSurface)
+                    setTypeface(typeface, Typeface.BOLD)
+                    setPadding(0, dpi(4f), 0, dpi(6f))
+                }
+            col.addView(valueView)
+
+            if (kind == "pct") {
+                bar = BarView(accent, outline)
+                range = null
+                col.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpi(8f)))
+            } else {
+                range = RangeBarView(accent, outline, muted)
+                bar = null
+                col.addView(range, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpi(46f)))
+            }
+
+            captionView =
+                TextView(this@SpeedrunActivity).apply {
+                    textSize = 12f
+                    setTextColor(muted)
+                    setPadding(0, dpi(6f), 0, 0)
+                }
+            col.addView(captionView)
+        }
+
+        private fun setPill(
+            text: String?,
+            color: Int,
+        ) {
+            pillHolder.removeAllViews()
+            if (text != null) pillHolder.addView(pill(text, color))
+        }
+
+        fun setPct(
+            known: Boolean,
+            value: Float,
+            caption: String,
+            reason: String,
+        ) {
+            if (known) {
+                valueView.text = "${value.toInt()}"
+                bar?.setValue(value)
+                captionView.text = caption
+                setPill(null, muted)
+            } else {
+                valueView.text = "—"
+                bar?.setValue(null)
+                captionView.text = reason
+                setPill("Needs more data", muted)
+            }
+        }
+
+        fun setRange(
+            known: Boolean,
+            proj: Float,
+            low: Float,
+            high: Float,
+            confidence: String,
+            note: String,
+            reason: String,
+        ) {
+            if (known) {
+                valueView.text = "${proj.toInt()}"
+                range?.setRange(proj, low, high)
+                captionView.text = "Likely ${low.toInt()}–${high.toInt()} · $note"
+                val conf = confidence.ifBlank { "low" }.lowercase()
+                setPill(
+                    "${conf.replaceFirstChar { it.uppercase() }} confidence",
+                    confColors[conf] ?: muted,
+                )
+            } else {
+                valueView.text = "—"
+                range?.setRange(null, 0f, 0f)
+                captionView.text = reason
+                setPill("Not enough data", muted)
+            }
+        }
+    }
+
+    // Slim rounded 0–100 progress bar.
+    private inner class BarView(
+        private val accent: Int,
+        private val track: Int,
+    ) : View(this@SpeedrunActivity) {
+        private var value: Float? = null
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        fun setValue(v: Float?) {
+            value = v
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            val h = height.toFloat()
+            val w = width.toFloat()
+            val r = h / 2
+            paint.color = track
+            canvas.drawRoundRect(0f, 0f, w, h, r, r, paint)
+            value?.let {
+                val frac = (it / 100f).coerceIn(0f, 1f)
+                val fw = maxOf(h, w * frac)
+                paint.color = accent
+                canvas.drawRoundRect(0f, 0f, fw, h, r, r, paint)
+            }
+        }
+    }
+
+    // The Readiness centerpiece: the 472–528 scale with the likely band and a
+    // marker at the projected score, so uncertainty is shown, not hidden.
+    private inner class RangeBarView(
+        private val accent: Int,
+        private val track: Int,
+        private val mutedColor: Int,
+    ) : View(this@SpeedrunActivity) {
+        private var proj: Float? = null
+        private var low = 0f
+        private var high = 0f
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val lo = 472f
+        private val hi = 528f
+
+        fun setRange(
+            p: Float?,
+            l: Float,
+            h: Float,
+        ) {
+            proj = p
+            low = l
+            high = h
+            invalidate()
+        }
+
+        private fun xOf(
+            v: Float,
+            x0: Float,
+            w: Float,
+        ): Float = x0 + ((v - lo) / (hi - lo)).coerceIn(0f, 1f) * w
+
+        override fun onDraw(canvas: Canvas) {
+            val d = resources.displayMetrics.density
+            val trackH = 8 * d
+            val trackY = 22 * d
+            val x0 = 2 * d
+            val w = width - 4 * d
+            paint.color = track
+            canvas.drawRoundRect(x0, trackY, x0 + w, trackY + trackH, trackH / 2, trackH / 2, paint)
+            proj?.let { pj ->
+                val lx = xOf(low, x0, w)
+                val hx = xOf(high, x0, w)
+                paint.color = ColorUtils.setAlphaComponent(accent, 95)
+                canvas.drawRoundRect(lx, trackY, maxOf(hx, lx + 2 * d), trackY + trackH, trackH / 2, trackH / 2, paint)
+                val px = xOf(pj, x0, w)
+                paint.color = Color.WHITE
+                canvas.drawCircle(px, trackY + trackH / 2, 7 * d, paint)
+                paint.color = accent
+                canvas.drawCircle(px, trackY + trackH / 2, 5 * d, paint)
+                paint.color = accent
+                paint.textSize = 12 * d
+                paint.isFakeBoldText = true
+                paint.textAlign = Paint.Align.CENTER
+                canvas.drawText("${pj.toInt()}", px, 14 * d, paint)
+            }
+            paint.color = mutedColor
+            paint.textSize = 10 * d
+            paint.isFakeBoldText = false
+            paint.textAlign = Paint.Align.LEFT
+            canvas.drawText("472", x0, trackY + trackH + 14 * d, paint)
+            paint.textAlign = Paint.Align.RIGHT
+            canvas.drawText("528", x0 + w, trackY + trackH + 14 * d, paint)
+        }
     }
 
     // Scores ------------------------------------------------------------------
@@ -206,31 +504,21 @@ class SpeedrunActivity : AnkiActivity() {
         launchCatchingTask {
             val s = withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunScores() }
             val mem = s.memory
-            memoryView.text =
-                if (mem.known) {
-                    "${mem.value.toInt()}/100\nretained over ${mem.studiedCards} studied card(s), " +
-                        "${(mem.topicCoverage * 100).toInt()}% of topics"
-                } else {
-                    "—\n${mem.reason}"
-                }
-
+            memoryCard.setPct(
+                mem.known,
+                mem.value,
+                "retained over ${mem.studiedCards} studied card(s) · ${(mem.topicCoverage * 100).toInt()}% of topics",
+                mem.reason,
+            )
             val perf = s.performance
-            performanceView.text =
-                if (perf.known) {
-                    "${perf.value.toInt()}/100\napplied accuracy over ${perf.attempts} question(s), " +
-                        "${perf.topicsCovered} topic(s)"
-                } else {
-                    "—\n${perf.reason}"
-                }
-
+            performanceCard.setPct(
+                perf.known,
+                perf.value,
+                "applied accuracy over ${perf.attempts} question(s) · ${perf.topicsCovered} topic(s)",
+                perf.reason,
+            )
             val rdy = s.readiness
-            readinessView.text =
-                if (rdy.known) {
-                    "${rdy.projected.toInt()}\nrange ${rdy.low.toInt()}–${rdy.high.toInt()} (472–528 scale), " +
-                        "${rdy.confidence} confidence\n${rdy.calibrationNote}"
-                } else {
-                    "—\n${rdy.reason}"
-                }
+            readinessCard.setRange(rdy.known, rdy.projected, rdy.low, rdy.high, rdy.confidence, rdy.calibrationNote, rdy.reason)
         }
 
     // Practice flow (open-ended, one question at a time) ----------------------
@@ -300,6 +588,7 @@ class SpeedrunActivity : AnkiActivity() {
             val text = q.options[letter].orEmpty()
             btn.text = "$letter.  $text"
             btn.isEnabled = text.isNotEmpty()
+            btn.setTextColor(onSurface)
         }
     }
 
@@ -311,7 +600,13 @@ class SpeedrunActivity : AnkiActivity() {
         sessionCount++
         answeredToday++
         if (correct) sessionCorrect++
-        optionButtons.values.forEach { it.isEnabled = false }
+        for ((optLetter, btn) in optionButtons) {
+            btn.isEnabled = false
+            when {
+                optLetter == q.answer -> btn.setTextColor(Color.parseColor("#2e7d32"))
+                optLetter == letter && !correct -> btn.setTextColor(Color.parseColor("#c62828"))
+            }
+        }
         dontKnowButton.isEnabled = false
         feedbackView.text =
             if (correct) {
@@ -319,6 +614,7 @@ class SpeedrunActivity : AnkiActivity() {
             } else {
                 "Incorrect. Answer: ${q.answer}.\n${q.explanation}"
             }
+        feedbackView.setTextColor(if (correct) Color.parseColor("#2e7d32") else onSurface)
         progressView.text = "This session: $sessionCount answered  •  $sessionCorrect correct"
         nextButton.isEnabled = true
         updateDailyLabel()
@@ -338,8 +634,12 @@ class SpeedrunActivity : AnkiActivity() {
         // guess can never inflate Performance/Readiness. Still reveal the answer.
         sessionCount++
         answeredToday++
-        optionButtons.values.forEach { it.isEnabled = false }
+        for ((optLetter, btn) in optionButtons) {
+            btn.isEnabled = false
+            if (optLetter == q.answer) btn.setTextColor(Color.parseColor("#2e7d32"))
+        }
         dontKnowButton.isEnabled = false
+        feedbackView.setTextColor(onSurface)
         feedbackView.text =
             "Marked “don't know”. Counts as not known, so guessing can't inflate your scores.\n" +
             "Answer: ${q.answer}.\n${q.explanation}"
@@ -364,7 +664,7 @@ class SpeedrunActivity : AnkiActivity() {
         val hi = recMax
         val (nudge, color) =
             when {
-                lo > 0 && done < lo -> Pair("— ${lo - done} to today’s minimum", Color.GRAY)
+                lo > 0 && done < lo -> Pair("— ${lo - done} to today’s minimum", muted)
                 hi > 0 && done >= hi -> Pair("— daily max reached; diminishing returns", Color.parseColor("#c62828"))
                 else -> Pair("— minimum reached; keep going or stop anytime", Color.parseColor("#2e7d32"))
             }
@@ -401,7 +701,7 @@ class SpeedrunActivity : AnkiActivity() {
         launchCatchingTask {
             val rdy = withContext(Dispatchers.IO) { CollectionManager.getBackend().speedrunScores() }.readiness
             val default = if (rdy.known) rdy.projected.toInt().toString() else "500"
-            val pad = (resources.displayMetrics.density * 16).toInt()
+            val pad = dpi(16f)
 
             val projectedInput =
                 EditText(this@SpeedrunActivity).apply {
@@ -418,7 +718,7 @@ class SpeedrunActivity : AnkiActivity() {
             val container =
                 LinearLayout(this@SpeedrunActivity).apply {
                     orientation = LinearLayout.VERTICAL
-                    setPadding(pad, pad / 2, pad, 0)
+                    setPadding(pad, dpi(8f), pad, 0)
                     addView(
                         TextView(this@SpeedrunActivity).apply {
                             text =
