@@ -28,9 +28,12 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.graphics.ColorUtils
@@ -324,8 +327,14 @@ class SpeedrunActivity : AnkiActivity() {
         )
         root.addView(
             outlinedButton("Record full-length score").apply {
-                layoutParams = matchWrap()
+                layoutParams = matchWrap(bottomMargin = 8f)
                 setOnClickListener { onRecordCalibration() }
+            },
+        )
+        root.addView(
+            outlinedButton("Generate with AI").apply {
+                layoutParams = matchWrap()
+                setOnClickListener { onGenerateAi() }
             },
         )
 
@@ -834,6 +843,111 @@ class SpeedrunActivity : AnkiActivity() {
                 }.setNegativeButton("Cancel", null)
                 .show()
         }
+
+    // AI question generation (mirrors desktop qt/aqt/speedrun_ai.py): grounded on
+    // the built-in flashcards, independently verified, inserted as standard
+    // mcat-question notes so the same scheduler/scoring pick them up. The API key
+    // is stored only on-device (SharedPreferences), never in the app.
+    private fun onGenerateAi() {
+        val prefs = getSharedPreferences("mcat_speedrun", MODE_PRIVATE)
+        val pad = dpi(16f)
+        val container =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(pad, dpi(8f), pad, 0)
+            }
+        container.addView(
+            TextView(this).apply {
+                text =
+                    "Generate MCAT questions with AI, grounded in the built-in flashcards for a " +
+                    "subject (so sources are traceable). New questions join the same bank and " +
+                    "are scheduled and scored like any other. Needs an OpenAI API key, stored " +
+                    "only on this device."
+                textSize = 13f
+                setPadding(0, 0, 0, dpi(8f))
+            },
+        )
+        val topicSpinner =
+            Spinner(this).apply {
+                adapter =
+                    ArrayAdapter(
+                        this@SpeedrunActivity,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        SpeedrunAi.TOPICS,
+                    )
+            }
+        container.addView(topicSpinner)
+        val countInput =
+            EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_NUMBER
+                hint = "How many (1–20)"
+                setText("5")
+            }
+        container.addView(countInput)
+        val keyInput =
+            EditText(this).apply {
+                hint = "OpenAI API key (sk-...)"
+                setText(prefs.getString("openai_key", "") ?: "")
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            }
+        container.addView(keyInput)
+        val verifyCheck =
+            CheckBox(this).apply {
+                text = "Independently verify each question (recommended)"
+                isChecked = true
+            }
+        container.addView(verifyCheck)
+
+        AlertDialog
+            .Builder(this)
+            .setTitle("Generate with AI")
+            .setView(container)
+            .setPositiveButton("Generate") { _, _ ->
+                val topic = topicSpinner.selectedItem as String
+                val count =
+                    countInput.text
+                        .toString()
+                        .toIntOrNull()
+                        ?.coerceIn(1, 20) ?: 5
+                val key = keyInput.text.toString().trim()
+                val verify = verifyCheck.isChecked
+                if (key.isEmpty()) {
+                    showThemedToast(this@SpeedrunActivity, "Enter an OpenAI API key.", false)
+                    return@setPositiveButton
+                }
+                prefs.edit().putString("openai_key", key).apply()
+                runGeneration(topic, count, key, verify)
+            }.setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runGeneration(
+        topic: String,
+        count: Int,
+        key: String,
+        verify: Boolean,
+    ) = launchCatchingTask {
+        showThemedToast(this@SpeedrunActivity, "Generating $count $topic question(s)…", false)
+        val added =
+            withContext(Dispatchers.IO) {
+                val facts = withCol { SpeedrunAi.sourceFacts(this, topic) }
+                val avoid = withCol { SpeedrunAi.existingStems(this, topic) }
+                val qs =
+                    SpeedrunAi.generate(key, SpeedrunAi.DEFAULT_MODEL, topic, count, facts, avoid, verify)
+                withCol { SpeedrunAi.insert(this, topic, qs, SpeedrunAi.DEFAULT_MODEL) }
+            }
+        showThemedToast(
+            this@SpeedrunActivity,
+            if (added > 0) {
+                "Added $added AI question(s) to $topic."
+            } else {
+                "No questions passed the checks — try again."
+            },
+            false,
+        )
+        updateControls()
+        refreshScores()
+    }
 
     // Exam date: set/clear the target MCAT date. Readiness then projects each
     // topic's recall forward to that day using FSRS stability (storage
