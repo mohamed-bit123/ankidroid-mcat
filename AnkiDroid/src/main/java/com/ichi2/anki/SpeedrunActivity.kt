@@ -102,6 +102,14 @@ class SpeedrunActivity : AnkiActivity() {
         muted = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY)
         outline = MaterialColors.getColor(this, com.google.android.material.R.attr.colorOutlineVariant, Color.LTGRAY)
         setContentView(buildUi())
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Recompute every time the panel becomes visible — not just on create —
+        // so the scores are never stale after a sync (done from the DeckPicker)
+        // or after the day rolls over. The scores are recomputed from the
+        // collection, so this always reflects the latest synced data.
         refreshScores()
         updateControls()
     }
